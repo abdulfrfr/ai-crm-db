@@ -1,0 +1,376 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Multi-tenant org ──────────────────────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  plan      String   @default("free")
+  // CRM backend: "builtin" uses Contact table; "zoho_desk" uses ZohoDeskAdapter
+  crmType   String   @default("builtin")
+  // Zoho credentials (stored per-org; only populated when crmType = zoho_desk)
+  zohoClientId      String?
+  zohoClientSecret  String?
+  zohoRefreshToken  String?
+  zohoDeskOrgId     String?
+  // HubSpot credentials (stored per-org; only populated when crmType = hubspot)
+  hubspotRefreshToken String?
+  hubspotPortalId     String?
+  // Twilio phone number setup
+  // phoneSource: "none" | "platform" (sub-account we created) | "own" (their Twilio account)
+  phoneSource       String   @default("none")
+  twilioPhoneNumber String?
+  // For "platform" numbers: sub-account SID + token created for this org
+  // For "own" numbers: the org's own account SID + token
+  twilioAccountSid  String?
+  twilioAuthToken   String?
+  // Knowledge base content (overrides knowledge/base.md when set)
+  knowledgeBase     String?
+  // Billing — credit balance in USD (new orgs start with $30 free)
+  creditBalanceUsd  Float    @default(30.0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users         User[]
+  contacts      Contact[]
+  customers     Customer[]
+  calls         Call[]
+  tickets       Ticket[]
+  notifications Notification[]
+  announcements Announcement[]
+  deals         Deal[]
+  dealFollowUps DealFollowUp[]
+  creditLedger  CreditLedger[]
+}
+
+model User {
+  id        String   @id @default(cuid())
+  clerkId   String   @unique
+  orgId     String
+  email     String
+  name      String?
+  role      String   @default("member")
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id])
+}
+
+// ── Built-in CRM contacts ─────────────────────────────────────────────────────
+
+model Contact {
+  id                String   @id @default(cuid())
+  orgId             String
+  name              String
+  phone             String?
+  email             String?
+  company           String?
+  notes             String?
+  // "unsynced" | "syncing" | "synced" | "failed"
+  twilioSyncStatus  String   @default("unsynced")
+  customerId        String?  @unique
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  org                    Organization           @relation(fields: [orgId], references: [id])
+  customer               Customer?              @relation(fields: [customerId], references: [id])
+  announcementDeliveries AnnouncementDelivery[]
+
+  @@index([orgId])
+  @@unique([orgId, phone])
+}
+
+model Announcement {
+  id        String    @id @default(cuid())
+  orgId     String
+  title     String
+  message   String
+  // "draft" | "sending" | "sent"
+  status    String    @default("draft")
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  org        Organization           @relation(fields: [orgId], references: [id])
+  deliveries AnnouncementDelivery[]
+
+  @@index([orgId])
+}
+
+model AnnouncementDelivery {
+  id             String    @id @default(cuid())
+  announcementId String
+  contactId      String
+  phone          String
+  // "pending" | "calling" | "answered" | "no_answer" | "failed"
+  status         String    @default("pending")
+  twilioCallSid  String?
+  attemptedAt    DateTime?
+
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id])
+
+  @@index([announcementId])
+}
+
+// ── Existing models (orgId added, nullable for backward compat) ───────────────
+
+model Customer {
+  id            String   @id @default(cuid())
+  orgId         String?
+  phone         String   @unique
+  name          String?
+  email         String?
+  crmCustomerId String?
+  regionHint        String?
+  regionSource      String   @default("none")
+  preferredLanguage String?
+  createdAt         DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  org           Organization? @relation(fields: [orgId], references: [id])
+  tickets       Ticket[]
+  calls         Call[]
+  outboundQueue OutboundQueue[]
+  contact       Contact?
+  deals         Deal[]
+  dealFollowUps DealFollowUp[]
+}
+
+model Ticket {
+  id                  String    @id @default(cuid())
+  orgId               String?
+  customerId          String
+  crmTicketId         String?
+  status              String    @default("open")
+  urgency             String    @default("medium")
+  category            String    @default("other")
+  description         String    @default("")
+  productRef          String?
+  conversationContext String    @default("")
+  pendingCRMTransfer  Boolean   @default(false)
+  // True for "I'll verify and call back" tickets — customer had an enquiry AI couldn't answer
+  isEnquiry           Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  resolvedAt          DateTime?
+
+  org           Organization?        @relation(fields: [orgId], references: [id])
+  customer      Customer             @relation(fields: [customerId], references: [id])
+  calls         Call[]
+  outboundQueue OutboundQueue[]
+  statusHistory TicketStatusHistory[]
+  comments      TicketComment[]
+}
+
+model TicketComment {
+  id          String   @id @default(cuid())
+  ticketId    String
+  authorType  String   // 'business_owner' | 'ai_agent'
+  authorName  String?
+  body        String
+  commentType String   @default("comment") // 'comment' | 'info_request' | 'resolution_note' | 'customer_info'
+  createdAt   DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+
+  @@index([ticketId])
+}
+
+model TicketStatusHistory {
+  id         String   @id @default(cuid())
+  ticketId   String
+  fromStatus String?
+  toStatus   String
+  changedBy  String   @default("system")
+  note       String?
+  createdAt  DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+
+  @@index([ticketId])
+}
+
+model Call {
+  id               String    @id @default(cuid())
+  orgId            String?
+  ticketId         String?
+  customerId       String?
+  direction        String
+  twilioCallSid    String    @unique
+  sttProvider      String    @default("deepgram")
+  ttsProvider      String    @default("elevenlabs")
+  language         String    @default("en")
+  startedAt        DateTime  @default(now())
+  endedAt          DateTime?
+  durationSeconds  Int?
+  escalated        Boolean   @default(false)
+  escalationReason String?
+  confidenceScore  Float?
+  crmWriteSuccess  Boolean?
+  callerCity       String?
+  callerState      String?
+  callerCountry    String?
+
+  dealId           String?
+
+  org      Organization?       @relation(fields: [orgId], references: [id])
+  ticket   Ticket?             @relation(fields: [ticketId], references: [id])
+  customer Customer?           @relation(fields: [customerId], references: [id])
+  deal     Deal?               @relation(fields: [dealId], references: [id])
+  segments TranscriptSegment[]
+}
+
+model TranscriptSegment {
+  id          String @id @default(cuid())
+  callId      String
+  speaker     String
+  text        String
+  timestampMs Int
+  emotionHint Float?
+
+  call Call @relation(fields: [callId], references: [id])
+}
+
+// ── Sales pipeline ────────────────────────────────────────────────────────────
+
+model Deal {
+  id              String    @id @default(cuid())
+  orgId           String
+  customerId      String
+  title           String
+  // "new_lead" | "contacted" | "interested" | "proposal" | "negotiating" | "won" | "lost"
+  stage           String    @default("new_lead")
+  productInterest String?
+  budget          String?
+  timeline        String?
+  decisionMaker   Boolean   @default(true)
+  // "hot" | "warm" | "cold"
+  leadScore       String    @default("warm")
+  notes           String?
+  objections      String?
+  nextFollowUpAt  DateTime?
+  wonAt           DateTime?
+  lostAt          DateTime?
+  lostReason      String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id])
+  customer  Customer     @relation(fields: [customerId], references: [id])
+  calls     Call[]
+  followUps DealFollowUp[]
+
+  @@index([orgId])
+}
+
+model DealFollowUp {
+  id            String    @id @default(cuid())
+  dealId        String
+  orgId         String
+  customerId    String
+  scheduledAt   DateTime
+  attemptedAt   DateTime?
+  // "pending" | "calling" | "done" | "failed"
+  status        String    @default("pending")
+  // "answered_interested" | "answered_not_interested" | "no_answer" | "booked"
+  outcome       String?
+  notes         String?
+  twilioCallSid String?
+  retryCount    Int       @default(0)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+
+  deal     Deal         @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  org      Organization @relation(fields: [orgId], references: [id])
+  customer Customer     @relation(fields: [customerId], references: [id])
+
+  @@index([orgId])
+  @@index([dealId])
+}
+
+model OutboundQueue {
+  id            String    @id @default(cuid())
+  orgId         String?
+  ticketId      String?
+  customerId    String
+  triggerStatus String
+  purpose       String    @default("get_info") // 'get_info' | 'confirm_resolution' | 'deliver_info' | 'manual_task'
+  context       String?   // JSON: { commentBody, commentId } or { instructions } for manual_task
+  scheduledAt   DateTime
+  attemptedAt   DateTime?
+  status        String    @default("pending")  // 'pending' | 'calling' | 'done' | 'failed'
+  retryCount    Int       @default(0)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+
+  ticket   Ticket?  @relation(fields: [ticketId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  orgId     String
+  type      String   // 'ticket_created' | 'info_collected' | 'resolution_confirmed' | 'resolution_denied'
+  title     String
+  body      String
+  ticketId  String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, read])
+}
+
+model CrmIdMap {
+  id           String   @id @default(cuid())
+  internalType String
+  internalId   String
+  crmName      String
+  crmId        String
+  createdAt    DateTime @default(now())
+
+  @@unique([internalType, internalId, crmName])
+}
+
+// ── Billing ───────────────────────────────────────────────────────────────────
+
+model CreditLedger {
+  id           String   @id @default(cuid())
+  orgId        String
+  // 'free_grant' | 'topup' | 'call_debit' | 'refund' | 'adjustment'
+  type         String
+  amountUsd    Float    // positive = credit, negative = debit
+  description  String
+  callId       String?
+  paymentRef   String?  // Flutterwave tx_ref or transaction ID
+  balanceAfter Float    // snapshot of balance after this entry
+  createdAt    DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([createdAt])
+}
+
+model BillingTopup {
+  id          String   @id @default(cuid())
+  orgId       String
+  amountUsd   Float
+  txRef       String   @unique // our generated reference sent to Flutterwave
+  flwTxId     String?           // Flutterwave transaction ID (from webhook)
+  status      String   @default("pending") // pending | completed | failed
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([orgId])
+  @@index([txRef])
+}
