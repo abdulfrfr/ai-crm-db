@@ -1,13 +1,11 @@
 {
-  "name": "@aicrm/db",
-  "version": "1.0.0",
-  "private": true,
+  "name": "@ai-crm/db",
+  "version": "1.0.2",
   "description": "Shared Prisma client and schema for AI CRM",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "client",
     "prisma/schema.prisma",
     "prisma/migrations"
   ],
@@ -20,10 +18,10 @@
     "db:push": "prisma db push --schema=./prisma/schema.prisma"
   },
   "dependencies": {
-    "@prisma/client": "^5.22.0"
+    "@prisma/client": "^5.22.0",
+    "prisma": "^5.22.0"
   },
   "devDependencies": {
-    "prisma": "^5.22.0",
     "typescript": "^5.6.0",
     "@types/node": "^20"
   }

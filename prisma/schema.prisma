@@ -74,6 +74,9 @@ model Contact {
   email             String?
   company           String?
   notes             String?
+  city              String?
+  state             String?
+  country           String?
   // "unsynced" | "syncing" | "synced" | "failed"
   twilioSyncStatus  String   @default("unsynced")
   customerId        String?  @unique
